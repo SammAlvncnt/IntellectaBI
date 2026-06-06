@@ -122,6 +122,14 @@ function handleFirestoreError(error: unknown, operationType: OperationType, path
   throw new Error(JSON.stringify(errInfo));
 }
 
+interface SandboxUser {
+  uid: string;
+  email: string;
+  displayName: string;
+  photoURL?: string | null;
+  isSandbox: boolean;
+}
+
 export default function App() {
   const [csvData, setCsvData] = useState<any[]>([]);
   const [headers, setHeaders] = useState<string[]>([]);
@@ -182,9 +190,12 @@ export default function App() {
   };
   
   // Firebase Authentication & Session Synchronization States
-  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [currentUser, setCurrentUser] = useState<any>(null);
   const [isAuthLoading, setIsAuthLoading] = useState(true);
   const [firstTimeLoaded, setFirstTimeLoaded] = useState(false);
+  const [authTab, setAuthTab] = useState<'sandbox' | 'google'>('sandbox');
+  const [sandboxEmail, setSandboxEmail] = useState('samuelalvincent2005@gmail.com');
+  const [sandboxName, setSandboxName] = useState('Samuel Alvincent');
 
   // Business History States
   const [historyList, setHistoryList] = useState<SavedSession[]>([]);
@@ -196,19 +207,33 @@ export default function App() {
   // Authentication state listener
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (user) => {
-      setCurrentUser(user);
+      if (user) {
+        setCurrentUser(user);
+      }
       setIsAuthLoading(false);
     });
     return () => unsubscribe();
   }, []);
 
-  // Sync session list from Firestore reactively
+  // Sync session list from Firestore or Sandboxed LocalStorage reactively
   useEffect(() => {
     if (!currentUser) {
       setHistoryList([]);
       setFirstTimeLoaded(false);
       return;
     }
+
+    if (currentUser.isSandbox) {
+      const key = `intellecta_history_sandbox_${currentUser.uid}`;
+      try {
+        const raw = localStorage.getItem(key);
+        setHistoryList(raw ? JSON.parse(raw) : []);
+      } catch {
+        setHistoryList([]);
+      }
+      return;
+    }
+
     const q = query(
       collection(db, 'sessions'), 
       where('userId', '==', currentUser.uid)
@@ -252,9 +277,34 @@ export default function App() {
     }
   };
 
+  const handleSandboxLoginSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const cleanEmail = sandboxEmail.trim().toLowerCase();
+    const cleanName = sandboxName.trim() || 'Masyarakat Enterprise';
+    if (!cleanEmail) {
+      setError('Harap masukkan alamat email professional Anda.');
+      return;
+    }
+    setError(null);
+    const mockUser: SandboxUser = {
+      uid: `sandbox_${btoa(cleanEmail).replace(/=/g, '')}`,
+      email: cleanEmail,
+      displayName: cleanName,
+      photoURL: null,
+      isSandbox: true
+    };
+    setCurrentUser(mockUser);
+    setFirstTimeLoaded(false);
+  };
+
   const handleLogout = async () => {
     try {
       setError(null);
+      if (currentUser && currentUser.isSandbox) {
+        setCurrentUser(null);
+        resetState();
+        return;
+      }
       await signOut(auth);
       resetState();
     } catch (err: any) {
@@ -290,7 +340,7 @@ export default function App() {
                        dashboard.aiResult?.dashboard_data?.dashboard_title || 
                        "Dashboard Analisis";
     
-    const sessId = activeSessionId || doc(collection(db, 'sessions')).id;
+    const sessId = activeSessionId || (currentUser.isSandbox ? `sess_${Date.now()}` : doc(collection(db, 'sessions')).id);
     const timestampISO = dashboard.aiResult?.session_info?.timestamp || new Date().toISOString();
 
     const newSession: SavedSession = {
@@ -308,6 +358,24 @@ export default function App() {
       chartOverrides,
       activeFilters
     };
+
+    if (currentUser.isSandbox) {
+      const key = `intellecta_history_sandbox_${currentUser.uid}`;
+      try {
+        const raw = localStorage.getItem(key);
+        const existing: SavedSession[] = raw ? JSON.parse(raw) : [];
+        const filtered = existing.filter(s => s.id !== sessId);
+        const updated = [newSession, ...filtered];
+        localStorage.setItem(key, JSON.stringify(updated));
+        setHistoryList(updated);
+        setActiveSessionId(sessId);
+        setIsSaveModalOpen(false);
+      } catch (err) {
+        console.error('LocalStorage write error', err);
+        setError('Gagal menyimpan ke penyimpanan lokal sandbox.');
+      }
+      return;
+    }
 
     try {
       await setDoc(doc(db, 'sessions', sessId), newSession);
@@ -343,6 +411,30 @@ export default function App() {
     e.stopPropagation();
     if (!currentUser) return;
     if (confirm("Hapus sesi analisis ini dari database?")) {
+      if (currentUser.isSandbox) {
+        const key = `intellecta_history_sandbox_${currentUser.uid}`;
+        try {
+          const raw = localStorage.getItem(key);
+          const existing: SavedSession[] = raw ? JSON.parse(raw) : [];
+          const updated = existing.filter(s => s.id !== id);
+          localStorage.setItem(key, JSON.stringify(updated));
+          setHistoryList(updated);
+          if (activeSessionId === id) {
+            setActiveSessionId(null);
+            setCsvData([]);
+            setHeaders([]);
+            setFileName(null);
+            setDashboard(null);
+            setKpiOverrides({});
+            setChartOverrides({});
+            setActiveFilters({});
+          }
+        } catch (err) {
+          console.error('LocalStorage delete error', err);
+        }
+        return;
+      }
+
       try {
         await deleteDoc(doc(db, 'sessions', id));
         if (activeSessionId === id) {
@@ -359,9 +451,9 @@ export default function App() {
         handleFirestoreError(err, OperationType.DELETE, `sessions/${id}`);
       }
     }
-  }, [activeSessionId, currentUser]);
+  }, [activeSessionId, currentUser, historyList]);
 
-  // Sync state changes instantly back to Firestore
+  // Sync state changes instantly back to Firestore or Local Storage Sandbox
   useEffect(() => {
     if (currentUser && activeSessionId && historyList.length > 0) {
       const activeSessionObj = historyList.find(s => s.id === activeSessionId);
@@ -370,6 +462,24 @@ export default function App() {
         const hasChartChanges = JSON.stringify(activeSessionObj.chartOverrides) !== JSON.stringify(chartOverrides);
         const hasFilterChanges = JSON.stringify(activeSessionObj.activeFilters) !== JSON.stringify(activeFilters);
         if (hasKpiChanges || hasChartChanges || hasFilterChanges) {
+          if (currentUser.isSandbox) {
+            const key = `intellecta_history_sandbox_${currentUser.uid}`;
+            const updated = historyList.map(s => {
+              if (s.id === activeSessionId) {
+                return {
+                  ...s,
+                  kpiOverrides,
+                  chartOverrides,
+                  activeFilters
+                };
+              }
+              return s;
+            });
+            localStorage.setItem(key, JSON.stringify(updated));
+            setHistoryList(updated);
+            return;
+          }
+
           const sessionRef = doc(db, 'sessions', activeSessionId);
           setDoc(sessionRef, {
             kpiOverrides,
@@ -938,47 +1048,108 @@ export default function App() {
 
             {/* Right Login column */}
             <div className="md:col-span-5">
-              <div className="bg-white border-2 border-coffee-medium/20 rounded-2xl p-6 md:p-8 flex flex-col gap-6 shadow-xl sticky-top animate-fade-in">
+              <div className="bg-white border-2 border-coffee-medium/20 rounded-2xl p-6 md:p-8 flex flex-col gap-5 shadow-xl sticky-top animate-fade-in">
                 <div className="flex flex-col gap-1 text-center">
-                  <div className="w-10 h-10 bg-coffee-medium/10 rounded-full flex items-center justify-center text-coffee-medium mx-auto mb-2">
+                  <div className="w-10 h-10 bg-coffee-medium/10 rounded-full flex items-center justify-center text-coffee-medium mx-auto mb-1">
                     <Lock size={18} />
                   </div>
-                  <h3 className="text-lg font-extrabold tracking-tight text-coffee-dark">Mulai Analisis Sekarang</h3>
-                  <p className="text-xs text-coffee-medium/85 font-semibold uppercase tracking-wider mt-0.5">Enterprise Dashboard Access Portal</p>
+                  <h3 className="text-lg font-extrabold tracking-tight text-coffee-dark">Akses Portal Analisis</h3>
+                  <p className="text-[10px] text-coffee-medium/85 font-semibold uppercase tracking-widest mt-0.5">Enterprise intelligence portal</p>
                 </div>
 
-                {/* System notification - API Server Auth */}
-                <div className="p-3.5 bg-amber-50/70 border border-amber-200/50 rounded-xl text-left flex items-start gap-3">
-                  <AlertCircle size={16} className="text-amber-800 shrink-0 mt-0.5" />
-                  <div className="flex flex-col gap-0.5">
-                    <span className="text-[10px] font-bold uppercase tracking-wide text-amber-800">Server API Authentication Mode</span>
-                    <span className="text-[10px] text-amber-900/90 font-semibold leading-relaxed">
-                      Sistem beroperasi dalam mode autentikasi server. Anda tidak perlu memasukkan API key apa pun. Seluruh analisis dijalankan via backend internal yang aman.
-                    </span>
-                  </div>
-                </div>
-
-                <div className="flex flex-col gap-4">
+                {/* Tab selections */}
+                <div className="grid grid-cols-2 p-1 bg-stone-100 rounded-xl border border-latte/10">
                   <button
-                    onClick={handleLogin}
-                    className="w-full py-3 bg-white border border-latte hover:border-coffee-medium/50 hover:bg-slate-50 text-coffee-dark rounded-xl text-xs font-semibold uppercase tracking-wider transition-all flex items-center justify-center gap-3 shadow-xs cursor-pointer"
+                    onClick={() => { setAuthTab('sandbox'); setError(null); }}
+                    className={`py-2 text-center text-[10px] font-bold uppercase tracking-wider rounded-lg transition-all cursor-pointer ${authTab === 'sandbox' ? 'bg-white text-coffee-dark shadow-xs' : 'text-coffee-medium hover:text-coffee-dark'}`}
                   >
-                    {/* Inline Google G vector */}
-                    <svg className="w-4 h-4" viewBox="0 0 24 24">
-                      <path fill="#EA4335" d="M12 5.04c1.67 0 3.2.58 4.39 1.71l3.27-3.27C17.68 1.54 14.98 1 12 1 7.35 1 3.4 3.65 1.5 7.5l3.86 3C6.35 7.5l5.65-2.46z" />
-                      <path fill="#4285F4" d="M23.49 12.27c0-.81-.07-1.59-.2-2.35H12v4.51h6.46c-.29 1.48-1.14 2.73-2.42 3.57v2.96h3.91c2.29-2.11 3.54-5.21 3.54-8.69z" />
-                      <path fill="#34A853" d="M12 23c3.24 0 5.97-1.07 7.96-2.92l-3.91-2.96c-1.09.73-2.48 1.17-4.05 1.17-3.11 0-5.75-2.1-6.69-4.94l-3.86 3C3.4 20.35 7.35 23 12 23z" />
-                      <path fill="#FBBC05" d="M5.31 13.35c-.24-.73-.38-1.5-.38-2.35s.14-1.62.38-2.35l-3.86-3C.56 7.4 0 9.64 0 12s.56 4.6 1.45 6.35l3.86-3z" />
-                    </svg>
-                    <span>Masuk Menggunakan Google</span>
+                    Sandbox Instan
                   </button>
-                  
-                  {error && (
-                    <div className="p-3 bg-red-50 text-red-700 text-[10px] font-bold uppercase tracking-wider rounded-xl border border-red-200/50 text-center animate-shake">
-                      {error}
-                    </div>
-                  )}
+                  <button
+                    onClick={() => { setAuthTab('google'); setError(null); }}
+                    className={`py-2 text-center text-[10px] font-bold uppercase tracking-wider rounded-lg transition-all cursor-pointer ${authTab === 'google' ? 'bg-white text-coffee-dark shadow-xs' : 'text-coffee-medium hover:text-coffee-dark'}`}
+                  >
+                    Google Cloud
+                  </button>
                 </div>
+
+                {authTab === 'sandbox' ? (
+                  <form onSubmit={handleSandboxLoginSubmit} className="flex flex-col gap-4">
+                    <div className="p-3 bg-emerald-50/60 border border-emerald-200/40 rounded-xl text-left flex items-start gap-2.5">
+                      <ShieldCheck size={16} className="text-emerald-800 shrink-0 mt-0.5" />
+                      <div className="flex flex-col gap-0.5">
+                        <span className="text-[10px] font-bold uppercase tracking-wide text-emerald-800">Rekomendasi Sandbox Iframe</span>
+                        <span className="text-[9px] text-emerald-900/90 font-medium leading-relaxed">
+                          Bypass pembatasan "Domain Tidak Sah" pada iframe secara instan. Isolasi multi-tenant tetap aktif via local state yang aman.
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-col gap-1 text-left">
+                      <label className="text-[9px] font-black uppercase tracking-wider text-coffee-medium">Alamat Email Professional</label>
+                      <input
+                        type="email"
+                        required
+                        placeholder="contoh: samuel@enterprise.com"
+                        value={sandboxEmail}
+                        onChange={(e) => setSandboxEmail(e.target.value)}
+                        className="p-3 text-xs bg-stone-50 border border-latte/70 hover:border-coffee-medium/50 focus:border-coffee-medium focus:outline-hidden rounded-xl transition-all font-medium text-coffee-dark"
+                      />
+                    </div>
+
+                    <div className="flex flex-col gap-1 text-left">
+                      <label className="text-[9px] font-black uppercase tracking-wider text-coffee-medium">Nama Lengkap Anda</label>
+                      <input
+                        type="text"
+                        required
+                        placeholder="contoh: Samuel Alvincent"
+                        value={sandboxName}
+                        onChange={(e) => setSandboxName(e.target.value)}
+                        className="p-3 text-xs bg-stone-50 border border-latte/70 hover:border-coffee-medium/50 focus:border-coffee-medium focus:outline-hidden rounded-xl transition-all font-medium text-coffee-dark"
+                      />
+                    </div>
+
+                    <button
+                      type="submit"
+                      className="w-full py-3 bg-coffee-medium hover:bg-coffee-dark text-white rounded-xl text-xs font-bold uppercase tracking-wider transition-all flex items-center justify-center gap-2 shadow-md shadow-coffee-medium/20 hover:shadow-lg cursor-pointer"
+                    >
+                      <Sparkles size={14} />
+                      <span>Masuk Sesi Sandbox</span>
+                    </button>
+                  </form>
+                ) : (
+                  <div className="flex flex-col gap-4">
+                    <div className="p-3 bg-amber-50/70 border border-amber-200/50 rounded-xl text-left flex items-start gap-2.5">
+                      <AlertCircle size={16} className="text-amber-800 shrink-0 mt-0.5" />
+                      <div className="flex flex-col gap-0.5">
+                        <span className="text-[10px] font-bold uppercase tracking-wide text-amber-800">Sinkronisasi Cloud Persisten</span>
+                        <span className="text-[9px] text-amber-900/90 font-medium leading-relaxed">
+                          Menyimpan sesi secara ril ke cloud Firestore. Jika tombol di bawah tidak merespons, harap whitelist domain pratinjau ini di konsol Firebase Anda.
+                        </span>
+                      </div>
+                    </div>
+
+                    <button
+                      onClick={handleLogin}
+                      className="w-full py-3 bg-white border border-latte hover:border-coffee-medium/50 hover:bg-stone-50 text-coffee-dark rounded-xl text-xs font-bold uppercase tracking-wider transition-all flex items-center justify-center gap-3 shadow-xs cursor-pointer"
+                    >
+                      {/* Inline Google G vector */}
+                      <svg className="w-4 h-4" viewBox="0 0 24 24">
+                        <path fill="#EA4335" d="M12 5.04c1.67 0 3.2.58 4.39 1.71l3.27-3.27C17.68 1.54 14.98 1 12 1 7.35 1 3.4 3.65 1.5 7.5l3.86 3C6.35 7.5l5.65-2.46z" />
+                        <path fill="#4285F4" d="M23.49 12.27c0-.81-.07-1.59-.2-2.35H12v4.51h6.46c-.29 1.48-1.14 2.73-2.42 3.57v2.96h3.91c2.29-2.11 3.54-5.21 3.54-8.69z" />
+                        <path fill="#34A853" d="M12 23c3.24 0 5.97-1.07 7.96-2.92l-3.91-2.96c-1.09.73-2.48 1.17-4.05 1.17-3.11 0-5.75-2.1-6.69-4.94l-3.86 3C3.4 20.35 7.35 23 12 23z" />
+                        <path fill="#FBBC05" d="M5.31 13.35c-.24-.73-.38-1.5-.38-2.35s.14-1.62.38-2.35l-3.86-3C.56 7.4 0 9.64 0 12s.56 4.6 1.45 6.35l3.86-3z" />
+                      </svg>
+                      <span>Masuk dengan Google</span>
+                    </button>
+                  </div>
+                )}
+                
+                {error && (
+                  <div className="p-3 bg-red-50 text-red-700 text-[10px] font-bold uppercase tracking-wider rounded-xl border border-red-200/50 text-center animate-shake">
+                    {error}
+                  </div>
+                )}
               </div>
             </div>
           </div>
