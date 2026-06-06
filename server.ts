@@ -14,11 +14,11 @@ async function startServer() {
 
   // API Route for Gemini Analysis
   app.post("/api/analyze", async (req, res) => {
-    const { summary, userApiKey } = req.body;
-    const apiKey = userApiKey || process.env.GEMINI_API_KEY;
+    const { summary } = req.body;
+    const apiKey = process.env.GEMINI_API_KEY;
 
     if (!apiKey) {
-      return res.status(400).json({ error: "Gemini API Key is required." });
+      return res.status(400).json({ error: "API Key Gemini tidak dikonfigurasi pada server (.env). Silakan atur variabel lingkungan GEMINI_API_KEY di panel Secrets atau konfigurasi server." });
     }
 
     const ai = new GoogleGenAI({ 

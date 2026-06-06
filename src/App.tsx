@@ -60,7 +60,6 @@ function cn(...inputs: ClassValue[]) {
 }
 
 export default function App() {
-  const [apiKey, setApiKey] = useState<string>(() => localStorage.getItem('intellecta_gemini_key') || '');
   const [csvData, setCsvData] = useState<any[]>([]);
   const [headers, setHeaders] = useState<string[]>([]);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -285,10 +284,7 @@ export default function App() {
   const [previewSortColumn, setPreviewSortColumn] = useState<string | null>(null);
   const [previewSortDirection, setPreviewSortDirection] = useState<'asc' | 'desc'>('asc');
 
-  // Save API key to local storage
-  useEffect(() => {
-    localStorage.setItem('intellecta_gemini_key', apiKey);
-  }, [apiKey]);
+
 
   const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement> | React.DragEvent) => {
     event.preventDefault();
@@ -391,10 +387,6 @@ export default function App() {
   };
 
   const handleAnalyze = async () => {
-    if (!apiKey) {
-      setError("Silakan masukkan API Key Gemini Anda di menu Pengaturan.");
-      return;
-    }
     if (csvData.length === 0) {
       setError("Sediakan data CSV terlebih dahulu.");
       return;
@@ -421,7 +413,7 @@ export default function App() {
       const response = await fetch("/api/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ summary, userApiKey: apiKey })
+        body: JSON.stringify({ summary })
       });
 
       if (!response.ok) {
@@ -778,16 +770,7 @@ export default function App() {
             </button>
           )}
           
-          <div className="flex items-center bg-latte/30 border border-latte rounded-md px-3 py-1.5 w-64 focus-within:ring-1 focus-within:ring-coffee-medium">
-            <Settings size={14} className="opacity-50 mr-2" />
-            <input 
-              type="password" 
-              placeholder="Gemini API Key" 
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-              className="bg-transparent text-xs w-full outline-none"
-            />
-          </div>
+
           <button 
             onClick={handleAnalyze}
             disabled={isAnalyzing || csvData.length === 0}
