@@ -1,7 +1,7 @@
 import express from "express";
 import path from "path";
 import { createServer as createViteServer } from "vite";
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import { GoogleGenAI, Type } from "@google/genai";
 import dotenv from "dotenv";
 
 dotenv.config();
@@ -20,10 +20,13 @@ async function startServer() {
       return res.status(400).json({ error: "API Key Gemini tidak dikonfigurasi pada server. Silakan atur variabel lingkungan GEMINI_API_KEY di panel Secrets atau konfigurasi server." });
     }
 
-    const genAI = new GoogleGenerativeAI(apiKey);
-    const model = genAI.getGenerativeModel({
-      model: "gemini-1.5-flash",
-      generationConfig: { responseMimeType: "application/json" }
+    const ai = new GoogleGenAI({
+      apiKey,
+      httpOptions: {
+        headers: {
+          "User-Agent": "aistudio-build",
+        }
+      }
     });
 
     const prompt = `
@@ -52,7 +55,7 @@ async function startServer() {
       --- BI SESSION & HISTORY MANAGEMENT ---
       1. SESSION NAMING: Setiap kali Anda memproses dataset, Anda WAJIB memberikan "suggested_name" (judul yang deskriptif berdasarkan isi data di objek session_info, misal: "Analisis Penjualan Q3 - Cabang Jakarta").
       2. DASHBOARD PERSISTENCE: Semua output JSON yang Anda kirimkan kini dianggap sebagai "Snapshot Sesi". Pastikan output Anda mengandung seluruh konfigurasi (KPI, Charts, Analysis) agar frontend dapat menyimpan JSON ini ke dalam localStorage browser sebagai history.
-      3. SESSION IDENTIFIER: Selalu sertakan "timestamp" dalam format ISO di dalam JSON (pada properti timestamp di objek session_info) agar frontend dapat mengurutkan history dashboard di sidebar dari yang terbaru hingga terlama.
+      3. SESSION IDENTIFIER: Selalu sertakan "timestamp" in the format ISO di dalam JSON (pada properti timestamp di objek session_info) agar frontend dapat mengurutkan history dashboard di sidebar dari yang terbaru hingga terlama.
 
       DATA SUMMARY:
       - Total Baris: ${summary.rowCount}
@@ -62,15 +65,92 @@ async function startServer() {
     `;
 
     try {
-      const result = await model.generateContent(prompt);
-      const responseText = result.response.text();
+      const response = await ai.models.generateContent({
+        model: "gemini-3.5-flash",
+        contents: prompt,
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              session_info: {
+                type: Type.OBJECT,
+                properties: {
+                  suggested_name: { type: Type.STRING },
+                  timestamp: { type: Type.STRING, description: "Timestamp ISO (new Date().toISOString())" }
+                },
+                required: ["suggested_name", "timestamp"]
+              },
+              dashboard_data: {
+                type: Type.OBJECT,
+                properties: {
+                  dashboard_title: { type: Type.STRING },
+                  navigation_config: {
+                    type: Type.OBJECT,
+                    description: "Konfigurasi untuk elemen navigasi di navbar.",
+                    properties: {
+                      show_data_preview_btn: { type: Type.BOOLEAN, description: "Set true agar tombol muncul." },
+                      preview_btn_label: { type: Type.STRING }
+                    },
+                    required: ["show_data_preview_btn", "preview_btn_label"]
+                  },
+                  kpi_cards: {
+                    type: Type.ARRAY,
+                    items: {
+                      type: Type.OBJECT,
+                      properties: {
+                        card_id: { type: Type.STRING },
+                        current_label: { type: Type.STRING },
+                        current_metric: { type: Type.STRING },
+                        kpi_options: { 
+                          type: Type.ARRAY, 
+                          items: { type: Type.STRING },
+                          description: "Daftar kolom angka yang valid untuk dipilih user pada dropdown card ini."
+                        },
+                        aggregation_type: { type: Type.STRING, description: "aggregation type: SUM, AVERAGE, COUNT" },
+                        format: { type: Type.STRING, description: "format type: currency, number, percentage" },
+                        unit_prefix: { type: Type.STRING, description: "Instruksi rendering: 'M' untuk jutaan, 'k' untuk ribuan, 'B' untuk milyar, 'raw' untuk nilai asli." }
+                      },
+                      required: ["card_id", "current_label", "current_metric", "kpi_options", "aggregation_type", "format", "unit_prefix"]
+                    }
+                  },
+                  deep_analysis_insights: {
+                    type: Type.ARRAY,
+                    description: "5 Poin analisis level Executive (Strategis, Taktis, Operasional).",
+                    items: { type: Type.STRING }
+                  },
+                  charts_layout: {
+                    type: Type.ARRAY,
+                    items: {
+                      type: Type.OBJECT,
+                      properties: {
+                        chart_id: { type: Type.STRING },
+                        title: { type: Type.STRING },
+                        description: { type: Type.STRING, description: "Penjelasan mengapa grafik ini penting bagi direksi." },
+                        current_x: { type: Type.STRING },
+                        current_y: { type: Type.STRING },
+                        available_x_fields: { type: Type.ARRAY, items: { type: Type.STRING } },
+                        available_y_fields: { type: Type.ARRAY, items: { type: Type.STRING } },
+                        supported_types: { type: Type.ARRAY, items: { type: Type.STRING }, description: "Grafik tipe: bar, line, pie, doughnut, area" }
+                      },
+                      required: ["chart_id", "title", "description", "current_x", "current_y", "available_x_fields", "available_y_fields", "supported_types"]
+                    }
+                  }
+                },
+                required: ["dashboard_title", "navigation_config", "kpi_cards", "deep_analysis_insights", "charts_layout"]
+              }
+            },
+            required: ["session_info", "dashboard_data"]
+          }
+        }
+      });
 
-      // Sanitasi JSON agar tidak ada teks nyasar
-      const jsonStart = responseText.indexOf("{");
-      const jsonEnd = responseText.lastIndexOf("}");
-      const cleanJson = responseText.substring(jsonStart, jsonEnd + 1);
+      const responseText = response.text;
+      if (!responseText) {
+        throw new Error("No response text returned from model");
+      }
 
-      const parsedData = JSON.parse(cleanJson);
+      const parsedData = JSON.parse(responseText.trim());
       return res.json(parsedData);
     } catch (error: any) {
       console.error("Analysis Error:", error);
