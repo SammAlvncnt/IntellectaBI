@@ -25,9 +25,25 @@ async function startServer() {
     const genAI = new GoogleGenerativeAI(apiKey);
     const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
 
-    const prompt = `Analisis data ini dan berikan output JSON murni tanpa kata pengantar apapun.
-      DATA: ${JSON.stringify(summary)}
-      Format JSON wajib memiliki: session_info (suggested_name, timestamp), dan dashboard_data (dashboard_title, navigation_config, kpi_cards, deep_analysis_insights, charts_layout).`;
+    const prompt = `
+      Anda adalah AI Data Processor. Output HANYA boleh berupa JSON murni.
+      TIDAK BOLEH ada teks pembuka, penjelasan, atau penutup.
+      Jika Anda memberikan teks selain JSON, sistem akan crash.
+      
+      Struktur JSON wajib:
+      {
+        "session_info": {"suggested_name": "String", "timestamp": "ISO Date"},
+        "dashboard_data": {
+          "dashboard_title": "String",
+          "navigation_config": {"show_data_preview_btn": true, "preview_btn_label": "String"},
+          "kpi_cards": [],
+          "deep_analysis_insights": [],
+          "charts_layout": []
+        }
+      }
+
+      DATA CSV: ${JSON.stringify(summary)}
+    `;
 
     try {
       const result = await model.generateContent({
