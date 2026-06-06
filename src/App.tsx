@@ -209,6 +209,14 @@ export default function App() {
     const unsubscribe = onAuthStateChanged(auth, (user) => {
       if (user) {
         setCurrentUser(user);
+        setAuthTab('google');
+      } else {
+        setCurrentUser((prev: any) => {
+          if (prev && prev.isSandbox) {
+            return prev;
+          }
+          return null;
+        });
       }
       setIsAuthLoading(false);
     });
