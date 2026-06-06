@@ -81,6 +81,7 @@ export interface DashboardData {
 
 export interface SavedSession {
   id: string;
+  userId?: string;
   session_info: SessionInfo;
   fileName: string | null;
   csvData: any[];

@@ -20,9 +20,33 @@ import {
   X,
   Plus,
   Menu,
-  Save
+  Save,
+  LogOut,
+  Lock,
+  Sparkles,
+  ShieldCheck,
+  Layers,
+  Activity
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { 
+  auth, 
+  googleProvider, 
+  signInWithPopup, 
+  signOut,
+  onAuthStateChanged, 
+  db, 
+  collection, 
+  doc, 
+  setDoc, 
+  deleteDoc, 
+  getDocs, 
+  query, 
+  where,
+  orderBy,
+  onSnapshot
+} from './firebase';
+import type { User } from './firebase';
 import {
   Chart as ChartJS,
   CategoryScale,
@@ -57,6 +81,45 @@ ChartJS.register(
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
+}
+
+enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
+}
+
+interface FirestoreErrorInfo {
+  error: string;
+  operationType: OperationType;
+  path: string | null;
+  authInfo: {
+    userId?: string | null;
+    email?: string | null;
+    emailVerified?: boolean | null;
+    isAnonymous?: boolean | null;
+    tenantId?: string | null;
+  };
+}
+
+function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
+  const errInfo: FirestoreErrorInfo = {
+    error: error instanceof Error ? error.message : String(error),
+    authInfo: {
+      userId: auth.currentUser?.uid,
+      email: auth.currentUser?.email,
+      emailVerified: auth.currentUser?.emailVerified,
+      isAnonymous: auth.currentUser?.isAnonymous,
+      tenantId: auth.currentUser?.tenantId,
+    },
+    operationType,
+    path
+  };
+  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  throw new Error(JSON.stringify(errInfo));
 }
 
 export default function App() {
@@ -118,19 +181,87 @@ export default function App() {
     });
   };
   
+  // Firebase Authentication & Session Synchronization States
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [isAuthLoading, setIsAuthLoading] = useState(true);
+  const [firstTimeLoaded, setFirstTimeLoaded] = useState(false);
+
   // Business History States
-  const [historyList, setHistoryList] = useState<SavedSession[]>(() => {
-    try {
-      const raw = localStorage.getItem('intellecta_history');
-      return raw ? JSON.parse(raw) : [];
-    } catch {
-      return [];
-    }
-  });
+  const [historyList, setHistoryList] = useState<SavedSession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [isSaveModalOpen, setIsSaveModalOpen] = useState(false);
   const [sessionSaveNameInput, setSessionSaveNameInput] = useState('');
+
+  // Authentication state listener
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      setCurrentUser(user);
+      setIsAuthLoading(false);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // Sync session list from Firestore reactively
+  useEffect(() => {
+    if (!currentUser) {
+      setHistoryList([]);
+      setFirstTimeLoaded(false);
+      return;
+    }
+    const q = query(
+      collection(db, 'sessions'), 
+      where('userId', '==', currentUser.uid)
+    );
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const items: SavedSession[] = [];
+      snapshot.forEach((doc) => {
+        const d = doc.data() as SavedSession;
+        if (d.userId === currentUser.uid) {
+          items.push(d);
+        }
+      });
+      // Sort items by timestamp descending
+      items.sort((a, b) => {
+        const timeA = new Date(a.session_info?.timestamp || 0).getTime();
+        const timeB = new Date(b.session_info?.timestamp || 0).getTime();
+        return timeB - timeA;
+      });
+      setHistoryList(items);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.LIST, 'sessions');
+    });
+    return () => unsubscribe();
+  }, [currentUser]);
+
+  // Handle load of latest snapshot on login
+  useEffect(() => {
+    if (historyList.length > 0 && !firstTimeLoaded) {
+      handleSelectSession(historyList[0]);
+      setFirstTimeLoaded(true);
+    }
+  }, [historyList, firstTimeLoaded]);
+
+  const handleLogin = async () => {
+    try {
+      setError(null);
+      await signInWithPopup(auth, googleProvider);
+    } catch (err: any) {
+      console.error(err);
+      setError(err.message || "Gagal masuk menggunakan Google.");
+    }
+  };
+
+  const handleLogout = async () => {
+    try {
+      setError(null);
+      await signOut(auth);
+      resetState();
+    } catch (err: any) {
+      console.error(err);
+      setError(err.message || "Gagal keluar sesi.");
+    }
+  };
 
   const resetState = useCallback(() => {
     setCsvData([]);
@@ -152,18 +283,19 @@ export default function App() {
     setIsSaveModalOpen(true);
   }, [dashboard]);
 
-  const handleSaveCurrentSessionSubmit = useCallback(() => {
-    if (!dashboard) return;
+  const handleSaveCurrentSessionSubmit = useCallback(async () => {
+    if (!dashboard || !currentUser) return;
     const nameToSave = sessionSaveNameInput.trim() || 
                        dashboard.aiResult?.session_info?.suggested_name || 
                        dashboard.aiResult?.dashboard_data?.dashboard_title || 
                        "Dashboard Analisis";
     
-    const sessId = activeSessionId || String(Date.now());
+    const sessId = activeSessionId || doc(collection(db, 'sessions')).id;
     const timestampISO = dashboard.aiResult?.session_info?.timestamp || new Date().toISOString();
 
     const newSession: SavedSession = {
       id: sessId,
+      userId: currentUser.uid,
       session_info: {
         suggested_name: nameToSave,
         timestamp: timestampISO
@@ -177,18 +309,14 @@ export default function App() {
       activeFilters
     };
 
-    setHistoryList(prev => {
-      const filtered = prev.filter(s => s.id !== sessId);
-      const updated = [newSession, ...filtered];
-      localStorage.setItem('intellecta_history', JSON.stringify(updated));
-      return updated;
-    });
-    
-    setActiveSessionId(sessId);
-    setIsSaveModalOpen(false);
-
-    window.dispatchEvent(new Event("storage"));
-  }, [dashboard, activeSessionId, fileName, csvData, headers, kpiOverrides, chartOverrides, activeFilters, sessionSaveNameInput]);
+    try {
+      await setDoc(doc(db, 'sessions', sessId), newSession);
+      setActiveSessionId(sessId);
+      setIsSaveModalOpen(false);
+    } catch (err: any) {
+      handleFirestoreError(err, OperationType.WRITE, `sessions/${sessId}`);
+    }
+  }, [dashboard, activeSessionId, fileName, csvData, headers, kpiOverrides, chartOverrides, activeFilters, sessionSaveNameInput, currentUser]);
 
   const handleSelectSession = useCallback((session: SavedSession) => {
     setActiveSessionId(session.id);
@@ -211,71 +339,49 @@ export default function App() {
     setActiveFilters(session.activeFilters || {});
   }, []);
 
-  const handleDeleteSession = useCallback((id: string, e: React.MouseEvent) => {
+  const handleDeleteSession = useCallback(async (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    setHistoryList(prev => {
-      const updated = prev.filter(s => s.id !== id);
-      localStorage.setItem('intellecta_history', JSON.stringify(updated));
-      return updated;
-    });
-    if (activeSessionId === id) {
-      setActiveSessionId(null);
-      setCsvData([]);
-      setHeaders([]);
-      setFileName(null);
-      setDashboard(null);
-      setKpiOverrides({});
-      setChartOverrides({});
-      setActiveFilters({});
-    }
-  }, [activeSessionId]);
-
-  // Sync state changes instantly back to localStorage snapshot session
-  useEffect(() => {
-    if (activeSessionId && historyList.length > 0) {
-      setHistoryList(prev => {
-        let changed = false;
-        const updated = prev.map(s => {
-          if (s.id === activeSessionId) {
-            const hasKpiChanges = JSON.stringify(s.kpiOverrides) !== JSON.stringify(kpiOverrides);
-            const hasChartChanges = JSON.stringify(s.chartOverrides) !== JSON.stringify(chartOverrides);
-            const hasFilterChanges = JSON.stringify(s.activeFilters) !== JSON.stringify(activeFilters);
-            if (hasKpiChanges || hasChartChanges || hasFilterChanges) {
-              changed = true;
-              return {
-                ...s,
-                kpiOverrides,
-                chartOverrides,
-                activeFilters
-              };
-            }
-          }
-          return s;
-        });
-        if (changed) {
-          localStorage.setItem('intellecta_history', JSON.stringify(updated));
-          return updated;
-        }
-        return prev;
-      });
-    }
-  }, [kpiOverrides, chartOverrides, activeFilters, activeSessionId, historyList.length]);
-
-  // Handle load of latest snapshot on page refresh (so data is never lost)
-  useEffect(() => {
-    const raw = localStorage.getItem('intellecta_history');
-    if (raw) {
+    if (!currentUser) return;
+    if (confirm("Hapus sesi analisis ini dari database?")) {
       try {
-        const items: SavedSession[] = JSON.parse(raw);
-        if (items && items.length > 0) {
-          // Select newest item by default on mount
-          handleSelectSession(items[0]);
+        await deleteDoc(doc(db, 'sessions', id));
+        if (activeSessionId === id) {
+          setActiveSessionId(null);
+          setCsvData([]);
+          setHeaders([]);
+          setFileName(null);
+          setDashboard(null);
+          setKpiOverrides({});
+          setChartOverrides({});
+          setActiveFilters({});
         }
-      } catch (e) {
-        console.error("Failed to restore history on restart", e);
+      } catch (err: any) {
+        handleFirestoreError(err, OperationType.DELETE, `sessions/${id}`);
       }
     }
-  }, []);
+  }, [activeSessionId, currentUser]);
+
+  // Sync state changes instantly back to Firestore
+  useEffect(() => {
+    if (currentUser && activeSessionId && historyList.length > 0) {
+      const activeSessionObj = historyList.find(s => s.id === activeSessionId);
+      if (activeSessionObj) {
+        const hasKpiChanges = JSON.stringify(activeSessionObj.kpiOverrides) !== JSON.stringify(kpiOverrides);
+        const hasChartChanges = JSON.stringify(activeSessionObj.chartOverrides) !== JSON.stringify(chartOverrides);
+        const hasFilterChanges = JSON.stringify(activeSessionObj.activeFilters) !== JSON.stringify(activeFilters);
+        if (hasKpiChanges || hasChartChanges || hasFilterChanges) {
+          const sessionRef = doc(db, 'sessions', activeSessionId);
+          setDoc(sessionRef, {
+            kpiOverrides,
+            chartOverrides,
+            activeFilters
+          }, { merge: true }).catch(err => {
+            handleFirestoreError(err, OperationType.WRITE, `sessions/${activeSessionId}`);
+          });
+        }
+      }
+    }
+  }, [kpiOverrides, chartOverrides, activeFilters, activeSessionId, currentUser, historyList]);
 
   // Data Preview Modal State
   const [isDataPreviewOpen, setIsDataPreviewOpen] = useState(false);
@@ -725,6 +831,167 @@ export default function App() {
 
   const navConfig = dashboard?.aiResult?.dashboard_data?.navigation_config || (dashboard?.aiResult as any)?.navigation_config;
 
+  if (isAuthLoading) {
+    return (
+      <div className="flex flex-col items-center justify-center h-screen bg-stone-50 text-coffee-dark font-sans">
+        <motion.div
+          initial={{ opacity: 0, scale: 0.95 }}
+          animate={{ opacity: 1, scale: 1 }}
+          transition={{ duration: 0.5 }}
+          className="flex flex-col items-center gap-4"
+        >
+          <div className="w-12 h-12 bg-coffee-medium rounded-xl flex items-center justify-center text-white shadow-xl shadow-coffee-medium/20 animate-pulse">
+            <BrainCircuit size={28} />
+          </div>
+          <div className="flex flex-col items-center gap-1.5">
+            <h2 className="text-lg font-bold tracking-tight uppercase text-coffee-dark">Intellecta<span className="text-coffee-medium">BI</span></h2>
+            <div className="flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping"></span>
+              <span className="text-[10px] font-bold text-coffee-medium tracking-widest uppercase">Connecting to Secure Tenant Cloud...</span>
+            </div>
+          </div>
+        </motion.div>
+      </div>
+    );
+  }
+
+  if (!currentUser) {
+    return (
+      <div className="min-h-screen bg-stone-50 font-sans text-coffee-dark flex flex-col justify-between overflow-x-hidden relative">
+        <header className="px-8 py-4 bg-white border-b border-latte flex items-center justify-between shadow-xs sticky top-0 z-50">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 bg-coffee-medium rounded-lg flex items-center justify-center text-white">
+              <BrainCircuit size={18} />
+            </div>
+            <span className="text-xl font-bold tracking-tight">Intellecta<span className="text-coffee-medium">BI</span></span>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-[9px] bg-emerald-50 text-emerald-800 border border-emerald-200/50 px-2 py-0.5 rounded-full font-bold uppercase tracking-wider">
+              Server-Side API Authentication
+            </span>
+            <span className="text-[9px] bg-amber-50 text-amber-800 border border-amber-200/50 px-2 py-0.5 rounded-full font-bold uppercase tracking-wider">
+              Multi-Tenant Security
+            </span>
+          </div>
+        </header>
+
+        <main className="flex-1 flex items-center justify-center px-6 py-12 md:py-16">
+          <div className="max-w-6xl w-full grid grid-cols-1 md:grid-cols-12 gap-8 md:gap-14 items-center">
+            {/* Left Content column */}
+            <div className="md:col-span-7 flex flex-col gap-6 text-left">
+              <div className="flex flex-col gap-3">
+                <div className="inline-flex items-center gap-1.5 self-start px-2.5 py-1 bg-latte/20 text-coffee-dark text-[10px] font-black uppercase tracking-widest rounded-md border border-latte/40">
+                  <Sparkles size={11} className="text-coffee-medium" />
+                  <span>Interactive Enterprise Intelligence</span>
+                </div>
+                <h2 className="text-3xl md:text-5xl font-black tracking-tight text-coffee-dark leading-[1.1]">
+                  Analisis CSV Anda <br />Seketika dengan <span className="text-coffee-medium">Gemini AI</span>
+                </h2>
+                <p className="text-sm md:text-base text-coffee-medium/90 font-medium leading-relaxed max-w-lg mt-2">
+                  Unggah file CSV mentah apa saja, dapatkan KPI interaktif kustom, visualisasi otomatis, dan ringkasan strategic insights bertaraf Chief Executive dalam hitungan detik. Tanpa pengaturan kode, tanpa batasan rumit.
+                </p>
+              </div>
+
+              {/* Core Features list bento-like */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-2">
+                <div className="bg-white border border-latte/40 p-4 rounded-xl flex items-start gap-3 shadow-xs">
+                  <div className="p-1.5 bg-latte/30 rounded-lg text-coffee-medium shrink-0">
+                    <Activity size={16} />
+                  </div>
+                  <div>
+                    <h4 className="text-[11px] font-bold uppercase tracking-wider text-coffee-dark">Dynamic Interactive Dashboard</h4>
+                    <p className="text-[10px] text-coffee-medium/90 font-medium leading-normal mt-0.5">Filter seluruh metrik visualisasi secara realtime hanya dengan mengeklik salah satu kategori diagram.</p>
+                  </div>
+                </div>
+
+                <div className="bg-white border border-latte/40 p-4 rounded-xl flex items-start gap-3 shadow-xs">
+                  <div className="p-1.5 bg-latte/30 rounded-lg text-coffee-medium shrink-0">
+                    <Settings size={16} />
+                  </div>
+                  <div>
+                    <h4 className="text-[11px] font-bold uppercase tracking-wider text-coffee-dark">Self-Service BI Modification</h4>
+                    <p className="text-[10px] text-coffee-medium/90 font-medium leading-normal mt-0.5">Edit dan ubah rumus aggregasi KPI, label metrik, dan tipe visualisasi bagan secara langsung tanpa memproses ulang data.</p>
+                  </div>
+                </div>
+
+                <div className="bg-white border border-latte/40 p-4 rounded-xl flex items-start gap-3 shadow-xs">
+                  <div className="p-1.5 bg-latte/30 rounded-lg text-coffee-medium shrink-0">
+                    <Database size={16} />
+                  </div>
+                  <div>
+                    <h4 className="text-[11px] font-bold uppercase tracking-wider text-coffee-dark">Cloud Persistence Saved Sessions</h4>
+                    <p className="text-[10px] text-coffee-medium/90 font-medium leading-normal mt-0.5">Sesi Anda disimpan secara aman di cloud Firestore per user sehingga Anda tidak akan pernah kehilangan riwayat analisis.</p>
+                  </div>
+                </div>
+
+                <div className="bg-white border border-latte/40 p-4 rounded-xl flex items-start gap-3 shadow-xs">
+                  <div className="p-1.5 bg-latte/30 rounded-lg text-coffee-medium shrink-0">
+                    <ShieldCheck size={16} />
+                  </div>
+                  <div>
+                    <h4 className="text-[11px] font-bold uppercase tracking-wider text-coffee-dark">Secure Multi-Tenant Sandbox</h4>
+                    <p className="text-[10px] text-coffee-medium/90 font-medium leading-normal mt-0.5">Arsitektur multi-tenant modern mengisolasi data Anda dengan tertib. Tidak ada kebocoran snapshot lintas pengguna.</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Right Login column */}
+            <div className="md:col-span-5">
+              <div className="bg-white border-2 border-coffee-medium/20 rounded-2xl p-6 md:p-8 flex flex-col gap-6 shadow-xl sticky-top animate-fade-in">
+                <div className="flex flex-col gap-1 text-center">
+                  <div className="w-10 h-10 bg-coffee-medium/10 rounded-full flex items-center justify-center text-coffee-medium mx-auto mb-2">
+                    <Lock size={18} />
+                  </div>
+                  <h3 className="text-lg font-extrabold tracking-tight text-coffee-dark">Mulai Analisis Sekarang</h3>
+                  <p className="text-xs text-coffee-medium/85 font-semibold uppercase tracking-wider mt-0.5">Enterprise Dashboard Access Portal</p>
+                </div>
+
+                {/* System notification - API Server Auth */}
+                <div className="p-3.5 bg-amber-50/70 border border-amber-200/50 rounded-xl text-left flex items-start gap-3">
+                  <AlertCircle size={16} className="text-amber-800 shrink-0 mt-0.5" />
+                  <div className="flex flex-col gap-0.5">
+                    <span className="text-[10px] font-bold uppercase tracking-wide text-amber-800">Server API Authentication Mode</span>
+                    <span className="text-[10px] text-amber-900/90 font-semibold leading-relaxed">
+                      Sistem beroperasi dalam mode autentikasi server. Anda tidak perlu memasukkan API key apa pun. Seluruh analisis dijalankan via backend internal yang aman.
+                    </span>
+                  </div>
+                </div>
+
+                <div className="flex flex-col gap-4">
+                  <button
+                    onClick={handleLogin}
+                    className="w-full py-3 bg-white border border-latte hover:border-coffee-medium/50 hover:bg-slate-50 text-coffee-dark rounded-xl text-xs font-semibold uppercase tracking-wider transition-all flex items-center justify-center gap-3 shadow-xs cursor-pointer"
+                  >
+                    {/* Inline Google G vector */}
+                    <svg className="w-4 h-4" viewBox="0 0 24 24">
+                      <path fill="#EA4335" d="M12 5.04c1.67 0 3.2.58 4.39 1.71l3.27-3.27C17.68 1.54 14.98 1 12 1 7.35 1 3.4 3.65 1.5 7.5l3.86 3C6.35 7.5l5.65-2.46z" />
+                      <path fill="#4285F4" d="M23.49 12.27c0-.81-.07-1.59-.2-2.35H12v4.51h6.46c-.29 1.48-1.14 2.73-2.42 3.57v2.96h3.91c2.29-2.11 3.54-5.21 3.54-8.69z" />
+                      <path fill="#34A853" d="M12 23c3.24 0 5.97-1.07 7.96-2.92l-3.91-2.96c-1.09.73-2.48 1.17-4.05 1.17-3.11 0-5.75-2.1-6.69-4.94l-3.86 3C3.4 20.35 7.35 23 12 23z" />
+                      <path fill="#FBBC05" d="M5.31 13.35c-.24-.73-.38-1.5-.38-2.35s.14-1.62.38-2.35l-3.86-3C.56 7.4 0 9.64 0 12s.56 4.6 1.45 6.35l3.86-3z" />
+                    </svg>
+                    <span>Masuk Menggunakan Google</span>
+                  </button>
+                  
+                  {error && (
+                    <div className="p-3 bg-red-50 text-red-700 text-[10px] font-bold uppercase tracking-wider rounded-xl border border-red-200/50 text-center animate-shake">
+                      {error}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        </main>
+
+        <footer className="px-8 py-5 bg-white border-t border-latte flex flex-col md:flex-row justify-between items-center gap-4 text-[9px] opacity-65 uppercase tracking-wider font-semibold">
+          <p>IntellectaBI &bull; DeepMind Intelligence Portal v2.5</p>
+          <p>Didesain Secara Eksklusif Untuk Analisis Data Korporasi Multi-Tenant</p>
+        </footer>
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col h-screen bg-bg-main overflow-hidden">
       {/* Header */}
@@ -887,39 +1154,74 @@ export default function App() {
           </div>
           
           {historyList.length > 0 && (
-            <div className="px-3 py-2 border-t border-latte/60 bg-slate-50/15">
+            <div className="px-3 py-2 border-t border-latte/60 bg-slate-50/15 animate-fade-in">
               <button
                 id="clear-all-sessions-btn"
-                onClick={() => {
-                  if (confirm("Hapus seluruh riwayat sesi analisis?")) {
-                    localStorage.removeItem('intellecta_history');
-                    setHistoryList([]);
-                    setActiveSessionId(null);
-                    setDashboard(null);
-                    setCsvData([]);
-                    setHeaders([]);
-                    setFileName(null);
+                onClick={async () => {
+                  if (confirm("Hapus seluruh riwayat sesi analisis secara permanen dari database cloud?")) {
+                    try {
+                      const qStatus = query(collection(db, 'sessions'), where('userId', '==', currentUser?.uid));
+                      const snap = await getDocs(qStatus);
+                      const deletePromises = snap.docs.map(doc => deleteDoc(doc.ref));
+                      await Promise.all(deletePromises);
+                      setHistoryList([]);
+                      resetState();
+                    } catch (err: any) {
+                      handleFirestoreError(err, OperationType.DELETE, 'sessions');
+                    }
                   }
                 }}
                 className="w-full py-1.5 border border-dashed border-red-500/30 text-red-700 hover:bg-red-50 rounded-lg text-[10px] font-bold uppercase tracking-wider transition-colors cursor-pointer"
               >
-                Clear Semua Sesi
+                Clear Semua Sesi Cloud
               </button>
             </div>
           )}
 
-          {/* Footer Sidebar with toggle close switch */}
-          <div className="p-3 border-t border-latte/60 bg-slate-50/50 flex items-center justify-between gap-2">
-            <button
-              onClick={() => setIsSidebarOpen(false)}
-              className="flex items-center gap-1.5 px-2 py-1 hover:bg-slate-100 text-[10px] font-bold text-coffee-medium/80 hover:text-coffee-dark uppercase rounded transition-colors cursor-pointer"
-              id="sidebar-footer-collapse-btn"
-              title="Close Workspace Sidebar"
-            >
-              <ChevronRight className="rotate-180 text-coffee-medium" size={13} />
-              <span>Sembunyikan</span>
-            </button>
-            <span className="text-[9px] text-coffee-medium/55 italic font-medium">Intellecta Workspace</span>
+          {/* Footer Sidebar with toggle close switch & Authentic User Profile Card */}
+          <div className="p-3 border-t border-latte/60 bg-slate-50 flex flex-col gap-2 shrink-0">
+            {currentUser && (
+              <div className="flex items-center justify-between gap-2 bg-white border border-latte/50 p-2 rounded-xl shadow-xs">
+                <div className="flex items-center gap-2 overflow-hidden">
+                  {currentUser.photoURL ? (
+                    <img 
+                      src={currentUser.photoURL} 
+                      alt={currentUser.displayName || ''} 
+                      className="w-7 h-7 rounded-full border border-latte/50 shrink-0" 
+                      referrerPolicy="no-referrer"
+                    />
+                  ) : (
+                    <div className="w-7 h-7 rounded-full bg-coffee-medium flex items-center justify-center text-white font-bold text-[10px] shrink-0 uppercase">
+                      {currentUser.displayName?.charAt(0) || currentUser.email?.charAt(0) || 'U'}
+                    </div>
+                  )}
+                  <div className="flex flex-col text-left overflow-hidden">
+                    <span className="text-[10px] font-bold text-coffee-dark truncate">{currentUser.displayName || 'Enterprise User'}</span>
+                    <span className="text-[8px] text-coffee-medium/85 truncate font-semibold">{currentUser.email}</span>
+                  </div>
+                </div>
+                <button
+                  onClick={handleLogout}
+                  className="p-1 px-1.5 hover:bg-red-50 text-red-600 rounded-lg transition-all cursor-pointer flex items-center justify-center border-0 bg-transparent shrink-0"
+                  title="Sign Out"
+                  id="sign-out-btn"
+                >
+                  <LogOut size={13} />
+                </button>
+              </div>
+            )}
+            <div className="flex items-center justify-between gap-2 mt-0.5">
+              <button
+                onClick={() => setIsSidebarOpen(false)}
+                className="flex items-center gap-1.5 px-2 py-1 hover:bg-slate-100 text-[10px] font-bold text-coffee-medium/80 hover:text-coffee-dark uppercase rounded transition-colors cursor-pointer"
+                id="sidebar-footer-collapse-btn"
+                title="Close Workspace Sidebar"
+              >
+                <ChevronRight className="rotate-180 text-coffee-medium" size={13} />
+                <span>Sembunyikan</span>
+              </button>
+              <span className="text-[9px] text-coffee-medium/55 italic font-medium">Intellecta Workspace</span>
+            </div>
           </div>
         </aside>
 
@@ -1347,7 +1649,7 @@ export default function App() {
               {/* Modal Content */}
               <div className="p-6 flex flex-col gap-4">
                 <p className="text-[11px] text-coffee-medium leading-relaxed font-semibold">
-                  Sesi analisis Anda akan disimpan ke dalam workspace sidebar secara permanen (localStorage). Jika ingin, Anda dapat menyesuaikan judul sesi di bawah ini.
+                  Sesi analisis Anda akan disimpan ke dalam database cloud multi-tenant Firestore secara aman. Sesi ini terikat unik pada akun Google Anda dan dapat diakses kapan saja demi menjaga integritas workspace Anda.
                 </p>
                 <div className="flex flex-col gap-1.5">
                   <label className="text-[10px] font-bold uppercase tracking-wider text-coffee-dark">Nama Sesi Analisis</label>

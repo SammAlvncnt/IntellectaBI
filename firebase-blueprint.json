@@ -1,0 +1,28 @@
+{
+  "entities": {
+    "Session": {
+      "title": "SavedSession",
+      "description": "Enterprise BI dashboard session containing CSV data, visual config overrides, and AI insights.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique identifier of the session." },
+        "userId": { "type": "string", "description": "Firebase Auth user Identifier of the owner." },
+        "session_info": { "type": "object", "description": "Session title and timestamp metadata." },
+        "fileName": { "type": "string" },
+        "csvData": { "type": "array" },
+        "headers": { "type": "array" },
+        "aiResult": { "type": "object" },
+        "kpiOverrides": { "type": "object" },
+        "chartOverrides": { "type": "object" },
+        "activeFilters": { "type": "object" }
+      },
+      "required": ["id", "userId", "session_info", "csvData", "headers", "aiResult"]
+    }
+  },
+  "firestore": {
+    "/sessions/{sessionId}": {
+      "schema": "Session",
+      "description": "Collection of saved Enterprise BI sessions mapped to users."
+    }
+  }
+}
