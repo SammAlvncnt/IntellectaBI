@@ -150,7 +150,20 @@ async function startServer() {
         throw new Error("No response text returned from model");
       }
 
-      const parsedData = JSON.parse(responseText.trim());
+      let cleanJson = responseText.trim();
+      // Remove markdown codeblock backticks if present
+      if (cleanJson.startsWith("```")) {
+        cleanJson = cleanJson.replace(/^```(?:json)?\n?/i, "").replace(/\n?```$/, "");
+      }
+
+      // Fallback: extract only the JSON object between the outermost curly braces
+      const firstCurly = cleanJson.indexOf("{");
+      const lastCurly = cleanJson.lastIndexOf("}");
+      if (firstCurly !== -1 && lastCurly !== -1 && lastCurly > firstCurly) {
+        cleanJson = cleanJson.substring(firstCurly, lastCurly + 1);
+      }
+
+      const parsedData = JSON.parse(cleanJson);
       return res.json(parsedData);
     } catch (error: any) {
       console.error("Analysis Error:", error);

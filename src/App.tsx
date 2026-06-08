@@ -641,11 +641,24 @@ export default function App() {
       });
 
       if (!response.ok) {
-        const errData = await response.json();
-        throw new Error(errData.error || "Gagal menganalisis data.");
+        const errText = await response.text();
+        let errMsg = "Gagal menganalisis data.";
+        try {
+          const errData = JSON.parse(errText);
+          errMsg = errData.error || errMsg;
+        } catch (e) {
+          errMsg = errText || errMsg;
+        }
+        throw new Error(errMsg);
       }
 
-      const aiResult: GeminiResponse = await response.json();
+      const resText = await response.text();
+      let aiResult: GeminiResponse;
+      try {
+        aiResult = JSON.parse(resText);
+      } catch (parseErr: any) {
+        throw new Error(`Respons dari server tidak valid (bukan JSON): ${resText.slice(0, 100)}...`);
+      }
 
       setActiveSessionId(null);
       setDashboard({
