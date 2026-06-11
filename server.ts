@@ -44,6 +44,7 @@ async function startServer() {
          - Anda wajib menyertakan objek "navigation_config" dalam JSON output untuk memicu fitur di frontend.
          - Setiap kali Anda melakukan analisis, pastikan memberikan akses kepada user untuk melihat data mentah melalui fitur "Full Data Preview".
          - Analisis Anda harus mencakup seluruh kolom di dataset, tidak boleh hanya terpaku pada satu metrik. Gunakan pendekatan EDA (Exploratory Data Analysis) untuk mengungkap korelasi tersembunyi.
+      9. KPI Cards: Anda WAJIB mengembalikan TEPAT 5 buah objek kpi_cards yang masing-masing merepresentasikan metrik bisnis yang unik dan relevan dari dataset (misalnya: Total Pendapatan, Rata-rata Nilai Transaksi, Jumlah Transaksi, Pelanggan Unik, atau Metrik operasional lainnya yang spesifik sesuai konteks CSV).
 
       --- SELF-SERVICE BI ARCHITECTURE ---
       1. DYNAMIC MAPPING: Untuk setiap chart dan card yang Anda buat, Anda wajib menyediakan "available_options" / opsi kustomisasi. 

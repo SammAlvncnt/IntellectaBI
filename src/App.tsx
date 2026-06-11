@@ -188,6 +188,52 @@ export default function App() {
       };
     });
   };
+
+  // Helper to identify numeric and categoric columns dynamically
+  const numericColumns = React.useMemo(() => {
+    if (!csvData.length) return [];
+    return headers.filter(col => {
+      const samples = csvData.slice(0, 15).map(r => r[col]).filter(v => v !== undefined && v !== null && v !== "");
+      if (!samples.length) return false;
+      return samples.every(v => typeof v === 'number' || (!isNaN(v as any) && !isNaN(parseFloat(v as any))));
+    });
+  }, [csvData, headers]);
+
+  const categoricColumns = React.useMemo(() => {
+    if (!csvData.length) return [];
+    return headers.filter(col => !numericColumns.includes(col));
+  }, [csvData, headers, numericColumns]);
+
+  // Clean option lists for UI select filters
+  const getKpiOptions = useCallback((specOptions: string[], activeMetric: string) => {
+    const base = numericColumns.length > 0 ? numericColumns : headers;
+    return Array.from(new Set([...base, activeMetric])).filter((item): item is string => !!item);
+  }, [numericColumns, headers]);
+
+  const getXOptions = useCallback((activeX: string, chartType: string) => {
+    const base = categoricColumns.length > 0 ? categoricColumns : headers;
+    let filtered = base;
+    if (['pie', 'doughnut'].includes(chartType)) {
+      const pieBase = headers.filter(col => {
+        const uniqueVals = new Set(csvData.map(r => r[col]).filter(v => v !== undefined && v !== null && v !== ""));
+        return uniqueVals.size > 0 && uniqueVals.size <= 25;
+      });
+      if (pieBase.length > 0) filtered = pieBase;
+    }
+    return Array.from(new Set([...filtered, activeX])).filter((item): item is string => !!item);
+  }, [categoricColumns, headers, csvData]);
+
+  const getYOptions = useCallback((activeY: string) => {
+    const base = numericColumns.length > 0 ? numericColumns : headers;
+    return Array.from(new Set([...base, activeY])).filter((item): item is string => !!item);
+  }, [numericColumns, headers]);
+
+  // Auto-collapse sidebar on smaller screens on load
+  useEffect(() => {
+    if (window.innerWidth < 1024) {
+      setIsSidebarOpen(false);
+    }
+  }, []);
   
   // Firebase Authentication & Session Synchronization States
   const [currentUser, setCurrentUser] = useState<any>(null);
@@ -1420,85 +1466,110 @@ export default function App() {
         {/* Scrollable Work Area containing main dashboard */}
         <div className="flex-1 overflow-y-auto flex flex-col" id="dashboard-work-area">
           <main className="p-6 flex flex-col gap-6 flex-1">
-        {/* Top Section: Upload & KPIs */}
-        <section className="grid grid-cols-12 gap-6 shrink-0">
+        {/* Top Section: Upload Banner */}
+        <section className="shrink-0 w-full">
           <div 
             onDragOver={(e) => e.preventDefault()}
             onDrop={handleFileUpload}
-            className="col-span-4 bg-latte/20 border-2 border-dashed border-coffee-medium/30 rounded-xl p-8 flex flex-col items-center justify-center text-center group cursor-pointer hover:bg-latte/30 transition-all"
+            className="w-full bg-latte/15 border-2 border-dashed border-coffee-medium/25 rounded-xl p-5 flex flex-col items-center justify-center text-center group cursor-pointer hover:bg-latte/25 transition-all min-h-[90px]"
           >
             <input type="file" accept=".csv" onChange={handleFileUpload} className="hidden" id="csv-upload" />
-            <label htmlFor="csv-upload" className="cursor-pointer">
-              <div className="w-12 h-12 bg-coffee-medium/10 rounded-full flex items-center justify-center mb-3 group-hover:scale-110 transition-transform">
-                <FileUp size={24} className="text-coffee-medium" />
+            <label htmlFor="csv-upload" className="cursor-pointer flex flex-col md:flex-row items-center justify-between gap-4 w-full px-2">
+              <div className="flex items-center gap-3.5">
+                <div className="w-9 h-9 bg-coffee-medium/10 rounded-full flex items-center justify-center group-hover:scale-110 transition-transform shrink-0">
+                  <FileUp size={18} className="text-coffee-medium" />
+                </div>
+                <div className="text-left">
+                  <p className="text-xs font-bold text-coffee-dark truncate max-w-[280px] sm:max-w-md">{fileName || "sales_report_2025.csv"}</p>
+                  <p className="text-[9px] opacity-65 uppercase tracking-widest font-black mt-0.5">Drag & drop or click to upload new CSV dataset</p>
+                </div>
               </div>
-              <p className="text-sm font-bold text-coffee-dark">{fileName || "sales_report_2025.csv"}</p>
-              <p className="text-[10px] opacity-60 mt-1 uppercase tracking-wider font-semibold">Drag & Drop or Take Sample</p>
               {!dashboard && csvData.length > 0 && (
-                <button onClick={handleAnalyze} className="mt-4 text-xs font-bold text-coffee-medium underline decoration-2 underline-offset-4">Run Intellecta v2.5 Now</button>
+                <button 
+                  onClick={handleAnalyze} 
+                  className="bg-coffee-medium hover:bg-coffee-dark text-white font-black text-xs px-5 py-2.5 rounded-lg transition-all shadow-xs shrink-0 cursor-pointer"
+                >
+                  Run Intellecta v2.5 Now
+                </button>
               )}
             </label>
           </div>
+        </section>
 
-          <div className="col-span-8 grid grid-cols-4 gap-4">
+        {/* Row 2: Wide, Responsive 5-column KPI Cards Grid */}
+        <section className="shrink-0 w-full">
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-5">
             {(allocatedKpis.length > 0 ? allocatedKpis : [
               { label: 'Total Baris', value: csvData.length > 0 ? csvData.length.toLocaleString() : '---' },
               { label: 'Total Kolom', value: headers.length > 0 ? headers.length.toLocaleString() : '---' },
+              { label: 'Kolom Numerik', value: csvData.length > 0 ? numericColumns.length.toString() : '---' },
               { label: 'Rekomendasi KPI #1', value: '---' },
               { label: 'Rekomendasi KPI #2', value: '---' }
             ]).map((kpi: any, idx) => (
-              <div key={idx} id={`kpi-card-${idx}`} className="dashboard-card p-4 flex flex-col justify-between hover:border-coffee-medium transition-all group bg-white border border-latte/60 rounded-xl shadow-xs">
-                <div>
-                  <div className="flex items-center justify-between gap-1 mb-2">
-                    <p className="compact-label font-bold text-[10px] tracking-wider text-coffee-medium uppercase truncate" title={kpi.label}>
+              <div key={idx} id={`kpi-card-${idx}`} className="dashboard-card p-4 flex flex-col justify-between hover:border-coffee-medium transition-all bg-white border border-latte/60 rounded-xl shadow-xs min-h-[190px] w-full">
+                <div className="flex-1 flex flex-col justify-between h-full">
+                  <div>
+                    <p className="font-extrabold text-[10px] tracking-wider text-coffee-medium uppercase line-clamp-2 leading-tight" title={kpi.label}>
                       {kpi.label}
                     </p>
-                    
-                    {/* Self-service controls for KPI Card */}
-                    {kpi.card_id && kpi.options && (
-                      <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
+                    <p className="text-xl md:text-2xl font-black text-coffee-dark mt-2 truncate leading-none">{kpi.value}</p>
+                  </div>
+                  
+                  {/* Self-service controls for KPI Card - Persistent & Neat */}
+                  {kpi.card_id && (
+                    <div className="mt-4 pt-3 w-full border-t border-latte/45 flex flex-col gap-2">
+                      <div className="flex flex-col gap-0.5">
+                        <span className="text-[8px] font-black tracking-widest text-coffee-medium/70 uppercase">Select Metric</span>
                         <select
                           value={kpi.current_metric}
                           onChange={(e) => handleKpiOverrideChange(kpi.card_id, 'metric', e.target.value)}
-                          className="bg-slate-50 border border-latte/40 text-[9px] font-bold p-0.5 rounded outline-none hover:border-coffee-medium text-coffee-dark cursor-pointer max-w-[80px]"
+                          className="bg-slate-50 border border-latte/50 text-[9px] font-bold py-1 px-1.5 rounded-md outline-none hover:border-coffee-medium text-coffee-dark cursor-pointer w-full truncate"
                           title="Pilih Metrik Kolom"
                         >
-                          {kpi.options.map((opt: string) => (
+                          {getKpiOptions(kpi.options || [], kpi.current_metric).map((opt: string) => (
                             <option key={opt} value={opt}>{opt}</option>
                           ))}
                         </select>
-
-                        <select
-                          value={kpi.current_aggregation}
-                          onChange={(e) => handleKpiOverrideChange(kpi.card_id, 'aggregation', e.target.value)}
-                          className="bg-slate-50 border border-latte/40 text-[9px] font-bold p-0.5 rounded outline-none hover:border-coffee-medium text-coffee-dark cursor-pointer"
-                          title="Tipe Agregasi"
-                        >
-                          <option value="SUM">SUM</option>
-                          <option value="AVERAGE">AVG</option>
-                          <option value="COUNT">COUNT</option>
-                        </select>
-
-                        <select
-                          value={kpi.current_unit_prefix}
-                          onChange={(e) => handleKpiOverrideChange(kpi.card_id, 'unitPrefix', e.target.value)}
-                          className="bg-slate-50 border border-latte/40 text-[9px] font-bold p-0.5 rounded outline-none hover:border-coffee-medium text-coffee-dark cursor-pointer"
-                          title="Unit prefix"
-                        >
-                          <option value="raw">raw</option>
-                          <option value="k">k</option>
-                          <option value="M">M</option>
-                          <option value="B">B</option>
-                        </select>
                       </div>
-                    )}
-                  </div>
-                  <p className="text-xl font-bold text-coffee-dark mt-1 truncate">{kpi.value}</p>
+
+                      <div className="grid grid-cols-2 gap-1.5">
+                        <div className="flex flex-col gap-0.5">
+                          <span className="text-[8px] font-black tracking-widest text-coffee-medium/70 uppercase">Agg</span>
+                          <select
+                            value={kpi.current_aggregation}
+                            onChange={(e) => handleKpiOverrideChange(kpi.card_id, 'aggregation', e.target.value)}
+                            className="bg-slate-50 border border-latte/50 text-[9px] font-bold py-1 px-1.5 rounded-md outline-none hover:border-coffee-medium text-coffee-dark cursor-pointer w-full"
+                            title="Tipe Agregasi"
+                          >
+                            <option value="SUM">SUM</option>
+                            <option value="AVERAGE">AVG</option>
+                            <option value="COUNT">COUNT</option>
+                          </select>
+                        </div>
+
+                        <div className="flex flex-col gap-0.5">
+                          <span className="text-[8px] font-black tracking-widest text-coffee-medium/70 uppercase">Format</span>
+                          <select
+                            value={kpi.current_unit_prefix}
+                            onChange={(e) => handleKpiOverrideChange(kpi.card_id, 'unitPrefix', e.target.value)}
+                            className="bg-slate-50 border border-latte/50 text-[9px] font-bold py-1 px-1.5 rounded-md outline-none hover:border-coffee-medium text-coffee-dark cursor-pointer w-full"
+                            title="Format Unit"
+                          >
+                            <option value="raw">raw</option>
+                            <option value="k">k</option>
+                            <option value="M">M</option>
+                            <option value="B">B</option>
+                          </select>
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </div>
-                <div className="h-1 bg-coffee-medium/10 rounded-full mt-3 overflow-hidden">
+
+                <div className="h-1 bg-coffee-medium/10 rounded-full mt-3 overflow-hidden shrink-0">
                   <motion.div 
                     initial={{ width: 0 }}
-                    animate={{ width: dashboard ? `${25 + (idx * 15)}%` : '5%' }}
+                    animate={{ width: dashboard ? `${20 + (idx * 16)}%` : '5%' }}
                     className="h-full bg-coffee-medium"
                   />
                 </div>
@@ -1508,9 +1579,9 @@ export default function App() {
         </section>
 
         {/* Bottom Section: Insights & Content */}
-        <section className="grid grid-cols-12 gap-6 flex-1 min-h-[500px]">
+        <section className="grid grid-cols-1 lg:grid-cols-12 gap-6 flex-1 min-h-[500px]">
           {/* Insights Panel */}
-          <div className="col-span-4 bg-coffee-dark text-latte p-6 rounded-xl flex flex-col h-full shadow-xl">
+          <div className="col-span-1 lg:col-span-4 bg-coffee-dark text-latte p-6 rounded-xl flex flex-col h-full shadow-xl">
             <div className="flex items-center gap-2 mb-6">
               <div className="w-6 h-6 bg-latte rounded-full flex items-center justify-center text-coffee-dark shadow-sm">
                 <BrainCircuit size={14} className="animate-pulse" />
@@ -1563,7 +1634,7 @@ export default function App() {
           </div>
 
           {/* Charts & Table Area */}
-          <div className="col-span-8 flex flex-col gap-6 overflow-y-auto pr-1">
+          <div className="col-span-1 lg:col-span-8 flex flex-col gap-6 overflow-y-auto pr-1">
             {/* Active Filters Bar */}
             {dashboard && Object.keys(activeFilters).length > 0 && (
               <div className="flex flex-wrap gap-2 items-center bg-white p-3 rounded-xl border border-latte shadow-sm shrink-0">
@@ -1643,7 +1714,7 @@ export default function App() {
                               onChange={(e) => handleChartOverrideChange(chartObj.originalConfig.chart_id, 'x', e.target.value)}
                               className="bg-white border border-latte/60 text-[10px] font-bold p-1 rounded hover:border-coffee-medium outline-none cursor-pointer text-coffee-dark max-w-[120px]"
                             >
-                              {chartObj.originalConfig.available_x_fields.map((field: string) => (
+                              {getXOptions(chartObj.activeX, chartObj.activeType).map((field: string) => (
                                 <option key={field} value={field}>{field}</option>
                               ))}
                             </select>
@@ -1656,7 +1727,7 @@ export default function App() {
                               onChange={(e) => handleChartOverrideChange(chartObj.originalConfig.chart_id, 'y', e.target.value)}
                               className="bg-white border border-latte/60 text-[10px] font-bold p-1 rounded hover:border-coffee-medium outline-none cursor-pointer text-coffee-dark max-w-[120px]"
                             >
-                              {chartObj.originalConfig.available_y_fields.map((field: string) => (
+                              {getYOptions(chartObj.activeY).map((field: string) => (
                                 <option key={field} value={field}>{field}</option>
                               ))}
                             </select>
